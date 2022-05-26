@@ -1,8 +1,9 @@
 package ghidrancdmeasures;
 
 import java.awt.BorderLayout;
-import java.io.File;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import javax.swing.JComponent;
 import javax.swing.JPanel;
@@ -16,11 +17,13 @@ import docking.action.ToolBarData;
 import docking.widgets.filechooser.GhidraFileChooser;
 import ghidra.framework.plugintool.Plugin;
 import ghidra.util.filechooser.GhidraFileFilter;
+import ghidrancdmeasures.NCDResult.NCDPairResult;
 import resources.Icons;
 
 class NCDProvider extends ComponentProvider {
 
 	private JPanel panel;
+	private JTextArea textArea;
 	private DockingAction action;
 	
 	private NCDService service;
@@ -35,7 +38,7 @@ class NCDProvider extends ComponentProvider {
 	// Customize GUI
 	private void buildPanel() {
 		panel = new JPanel(new BorderLayout());
-		JTextArea textArea = new JTextArea(5, 25);
+		textArea = new JTextArea(5, 25);
 		textArea.setEditable(false);
 		panel.add(new JScrollPane(textArea));
 		setVisible(true);
@@ -49,15 +52,18 @@ class NCDProvider extends ComponentProvider {
 				fileChooser.setMultiSelectionEnabled(true);
 				fileChooser.setSelectedFileFilter(GhidraFileFilter.ALL);
 				
-				List<File> files = fileChooser.getSelectedFiles();
+				List<Path> files = fileChooser.getSelectedFiles()
+						.stream().map( f -> f.toPath() ).collect(Collectors.toList());
 				System.out.println("Selected " + files.size() + " files!");
 				
-				try {
-					service.compute(files);
-				} catch (Exception e) {
-					e.printStackTrace();
-					throw new RuntimeException(e);
+				NCDResult results = service.compute(files);
+				
+				String dump = "";
+				for (NCDPairResult pair: results.getPairs()) {
+					dump += pair.getP1().getFileName().toString() + " / " + pair.getP2().getFileName().toString() + "\t==> " + pair.getSimilarity() + "\n";
 				}
+				
+				textArea.setText(dump);
 			}
 		};
 		action.setToolBarData(new ToolBarData(Icons.ADD_ICON, null));

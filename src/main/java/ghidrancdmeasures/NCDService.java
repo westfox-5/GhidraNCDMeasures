@@ -5,80 +5,129 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.ArrayList;
+import java.nio.file.StandardOpenOption;
+import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import ghidrancdmeasures.NCDResult.NCDPairwiseResult;
+import ghidrancdmeasures.NCDResult.NCDPairResult;
 
 public class NCDService {
-	
-	
-	public NCDResult compute(List<File> files) throws IOException {
-		List<NCDPairwiseResult> results = new ArrayList<>();
-		for (File f1: files) {
-			FileInputStream fis1 = new FileInputStream(f1);
-			FileChannel fc1 = fis1.getChannel();
-			long fc1Start = fc1.position();
-			
-			for (File f2: files) {
-				if (Files.isSameFile(f1.toPath(), f2.toPath())) { continue; }
-				
-				FileInputStream fis2 = new FileInputStream(f2);
-				Double similarity = 1-NCD(f1.getName(), fis1, f2.getName(), fis2);
-				results.add(NCDPairwiseResult.of(f1, f2, similarity));
-				
-				fis2.close();			// close inner inputStream
-				fc1.position(fc1Start); // position outer inputStream to start
+
+	private static final String BASE_DIR_NAME = "ncddiff";
+
+	public NCDResult compute(List<Path> paths) {
+		return NCDResult.of(paths.stream().flatMap(p -> ncd(p, paths).stream()) // for each file, create the ncd with
+																				// all other files
+				.collect(Collectors.toUnmodifiableList()));
+	}
+
+	private List<NCDPairResult> ncd(Path path, List<Path> paths) {
+		return paths.stream().filter(p -> !p.equals(path)) // avoid the same file
+				.map(p -> ncd(path, p)) // create NCD metric
+				.collect(Collectors.toUnmodifiableList());
+	}
+
+	private NCDPairResult ncd(Path path1, Path path2) {
+		Double ncd = null;
+
+		Path dir = path1.getParent().resolve(BASE_DIR_NAME);
+		try {
+			dir.toFile().mkdirs();
+
+			Path zip1 = createZip(dir, path1);
+			Long size1 = Files.size(zip1);
+
+			Path zip2 = createZip(dir, path2);
+			Long size2 = Files.size(zip2);
+
+			Path concatFile = concatPaths(dir, path1, path2);
+			Path zipConcat = createZip(dir, concatFile);
+			Long sizeConcat = Files.size(zipConcat);
+
+			ncd = (1.00 * sizeConcat - Math.min(size1, size2)) / (Math.max(size1, size2) * 1.00);
+
+			deleteDirectory(dir);
+
+		} catch (IOException e) {
+			e.printStackTrace();
+			throw new RuntimeException(e);
+		}
+
+		return NCDPairResult.of(path1, path2, ncd);
+	}
+
+	private void deleteDirectory(Path path) throws IOException {  
+		Files.walk(path)
+		    .sorted(Comparator.reverseOrder())
+		    .map(Path::toFile)
+		    .forEach(File::delete);
+	}
+
+	private Path createZip(Path dir, Path path) throws IOException {
+		String basename = getBasename(path);
+		Path zip = dir.resolve(Path.of(basename + ".zip"));
+
+		BufferedOutputStream bos = null;
+		ZipOutputStream zos = null;
+		FileInputStream fis = null;
+		try {
+			bos = new BufferedOutputStream(new FileOutputStream(zip.toFile()));
+			zos = new ZipOutputStream(bos);
+			fis = new FileInputStream(path.toFile());
+			ZipEntry zipEntry = new ZipEntry(path.getFileName().toString());
+			zos.putNextEntry(zipEntry);
+
+			byte[] buffer = new byte[1024];
+			int count;
+
+			while ((count = fis.read(buffer)) > 0) {
+				zos.write(buffer, 0, count);
 			}
-			
-			fis1.close(); // close outer inputStream
+
+		} finally {
+			if (bos != null) {
+				bos.close();
+			}
+			if (zos != null) {
+				zos.flush();
+				zos.close();
+			}
+			if (fis != null) {
+				fis.close();
+			}
 		}
 
-		return NCDResult.of(results);
-	}
-	
-	private Double NCD(String fileName1, FileInputStream fis1, String fileName2, FileInputStream fis2) throws IOException {
-		long size1 = zipSize(fileName1, fis1);
-		long size2 = zipSize(fileName2, fis2);
-		
-		long concatSize = 0; // TODO
-		
-		return (concatSize - Math.min(size1, size2)) / Math.max(size1, size2) * 1.00 ;
+		return zip;
 	}
 
-	
-	// DOES NOT CLOSE THE INPUT STREAM!
-	private long zipSize(String fileName, InputStream is) throws IOException {
-		String zipName = "/tmp/" + fileName + ".zip";
-		BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(zipName));
-		ZipOutputStream zos = new ZipOutputStream(bos);
-		ZipEntry entry = new ZipEntry(fileName);
-		zos.putNextEntry(entry);
-		
-		// create the zip for the inputStream
-		byte[] b = new byte[1024];
-		int count;
-		
-		while ((count = is.read(b))>0) {
-			zos.write(b, 0, count);
+	private Path concatPaths(Path dir, Path path1, Path path2) throws IOException {
+		Path out = dir.resolve(Path.of(getBasename(path1) + "_" + getBasename(path2)));
+
+		try (FileChannel outChannel = FileChannel.open(out, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+
+			try (FileChannel in = FileChannel.open(path1, StandardOpenOption.READ)) {
+				for (long p = 0, l = in.size(); p < l;)
+					p += in.transferTo(p, l - p, outChannel);
+			}
+
+			try (FileChannel in = FileChannel.open(path2, StandardOpenOption.READ)) {
+				for (long p = 0, l = in.size(); p < l;)
+					p += in.transferTo(p, l - p, outChannel);
+			}
 		}
-		// close all outputStreams
-		zos.flush();
-		zos.close();
-		bos.close();
-		
-		
-		// return zip size
-		Path zipPath = Paths.get(zipName);
-		long zipSize = Files.size(zipPath);
-		Files.delete(zipPath);
-		return zipSize;
+		return out;
 	}
+
+	private String getBasename(Path path) {
+		String filename = path.getFileName().toString();
+		String[] tokens = filename.split("\\.(?=[^\\.]+$)");
+		return tokens[0];
+	}
+
 }
