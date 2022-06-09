@@ -20,6 +20,7 @@ import ghidra.app.plugin.ProgramPlugin;
 import ghidra.framework.plugintool.PluginInfo;
 import ghidra.framework.plugintool.PluginTool;
 import ghidra.framework.plugintool.util.PluginStatus;
+import ghidrancdmeasures.util.ZipHelper;
 
 /**
  * Normalized Compression Distance measure calculator
@@ -58,7 +59,7 @@ public class NCDPlugin extends ProgramPlugin {
 	public void init() {
 		super.init();
 		
-		this.service = new NCDService();
+		this.service = new NCDService(ZipHelper::rzip);
 		this.provider.setService(service);
 	}
 }
